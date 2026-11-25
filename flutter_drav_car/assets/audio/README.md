@@ -12,3 +12,5 @@
 - https://education.nsw.gov.au/content/dam/main-education/teaching-and-learning/curriculum/key-learning-areas/creative-arts/media/documents/creative-arts-s4-music-kasca-sequences-music-handouts-piece-9-frere-jacques.pdf
 
 未使用中文儿歌歌词或商业演唱版本。
+
+1.2新增engine前缀的五种行驶循环声、ambient前缀的三种环境声，以及连吃、接近避让、恢复、变身结束提醒和卡通角色短音。均为本项目数学合成音色，角色短音不使用原作配音。音效开关同时控制行驶声与环境声，音乐可独立关闭。

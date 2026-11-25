@@ -74,7 +74,12 @@ class RoadProjection {
 }
 
 class RoadPainter extends CustomPainter {
-  RoadPainter({required this.game, required this.world, this.preview = false});
+  RoadPainter({
+    required this.game,
+    required this.world,
+    this.preview = false,
+    Listenable? animation,
+  }) : super(repaint: animation);
   final GameModel game;
   final WorldTheme world;
   final bool preview;
@@ -196,19 +201,26 @@ class RoadPainter extends CustomPainter {
       }
     }
     // A single continuous surface avoids seams between perspective bands.
-    Path corridor(double width) => Path()..addPolygon([
-      for (var i = 0; i <= 60; i++) road.edge(-width, i / 60),
-      for (var i = 60; i >= 0; i--) road.edge(width, i / 60),
-    ], true);
-    brush..shader = null..color = world.ground;
+    Path corridor(double width) => Path()
+      ..addPolygon([
+        for (var i = 0; i <= 60; i++) road.edge(-width, i / 60),
+        for (var i = 60; i >= 0; i--) road.edge(width, i / 60),
+      ], true);
+    brush
+      ..shader = null
+      ..color = world.ground;
     c.drawPath(corridor(1.2), brush);
     brush.color = const Color(0xfff8f0d7);
     c.drawPath(corridor(1.045), brush);
-    brush..color = Colors.white..shader = const LinearGradient(
-      begin: Alignment.topCenter, end: Alignment.bottomCenter,
-      colors: [Color(0xffa3b9b4), Color(0xff688f8c)],
-    ).createShader(Rect.fromLTRB(0, hy, w, h));
-    c.drawPath(corridor(1), brush); brush.shader = null;
+    brush
+      ..color = Colors.white
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xffa3b9b4), Color(0xff688f8c)],
+      ).createShader(Rect.fromLTRB(0, hy, w, h));
+    c.drawPath(corridor(1), brush);
+    brush.shader = null;
     for (var i = 0; i < 18; i++) {
       final t = ((i / 18 + game.distance * .72) % 1.0);
       final end = (t + .026).clamp(0.0, 1.0);
@@ -283,10 +295,23 @@ class RoadPainter extends CustomPainter {
       carWidth * .19,
       const Color(0x35634e3f),
     );
+    if (game.moving) motionTrail(p, carWidth);
     c.save();
-    c.translate(p.dx, p.dy + bob);
+    final gait = game.motion;
+    final hop =
+        game.form == VehicleForm.dinosaur || game.form == VehicleForm.peppa
+        ? -sin(gait).abs() * carWidth * .05
+        : 0.0;
+    c.translate(p.dx, p.dy + bob + hop);
+    if (game.transition > 0) {
+      final t = (1 - game.transition / .65).clamp(0.0, 1.0);
+      final pulse = 1 + sin(t * pi) * .13;
+      c.scale(pulse, 2 - pulse);
+    }
+    if (game.impact > 0 && !game.transformed) c.scale(1.03, .97);
     c.rotate(
-      (game.target - game.x) * .06 +
+      game.lean * (game.form == VehicleForm.plane ? 1.1 : .5) +
+          (game.impact > 0 ? sin(game.impact * 50) * .025 : 0) +
           (game.moving && game.rocking ? sin(game.rideTime * 2.3) * .012 : 0),
     );
     if (game.transformed) {
@@ -295,7 +320,7 @@ class RoadPainter extends CustomPainter {
         Offset(
           0,
           game.form == VehicleForm.plane
-              ? -carWidth * .2 + sin(game.rideTime * 4) * 3
+              ? -carWidth * .23 + sin(game.motion * .5) * 4
               : 0,
         ),
         carWidth,
@@ -304,6 +329,26 @@ class RoadPainter extends CustomPainter {
       car(Offset.zero, carWidth);
     }
     c.restore();
+    if (game.transition > 0 || game.impact > 0) pulseRing(p, carWidth);
+    if (game.transformed && game.formTime <= 3) {
+      brush
+        ..shader = null
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = const Color(0xffffe8a1);
+      c.drawArc(
+        Rect.fromCenter(
+          center: p.translate(0, -carWidth * .4),
+          width: carWidth * 1.5,
+          height: carWidth * 1.6,
+        ),
+        -pi / 2,
+        pi * 2 * game.formTime / 3,
+        false,
+        brush,
+      );
+      brush.style = PaintingStyle.fill;
+    }
     if (game.shield > 0) {
       final bubble = Rect.fromCenter(
         center: p.translate(0, -carWidth * .36),
@@ -369,8 +414,125 @@ class RoadPainter extends CustomPainter {
         oval(point, 3.2 * particle.life, 4.8 * particle.life, color);
       }
     }
+    for (final reward in game.rewards) {
+      final at = road
+          .project(reward.x, reward.y)
+          .translate(0, -(1 - reward.life) * 42);
+      final text = rewardLabels.putIfAbsent(
+        reward.value,
+        () => TextPainter(
+          text: TextSpan(
+            text: '+${reward.value}',
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+              color: Color(0xfffff2b0),
+              shadows: [
+                Shadow(
+                  color: Color(0x885a733d),
+                  blurRadius: 3,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout(),
+      );
+      c.save();
+      c.translate(at.dx, at.dy);
+      c.scale(min(1.0, reward.life * 5));
+      text.paint(c, Offset(-text.width / 2, 0));
+      c.restore();
+    }
     if (!preview) dashboard();
     c.restore();
+  }
+
+  static final rewardLabels = <int, TextPainter>{};
+  void pulseRing(Offset p, double width) {
+    final progress = game.transition > 0
+        ? 1 - game.transition / .65
+        : 1 - game.impact / .4;
+    final t = progress.clamp(0.0, 1.0);
+    brush
+      ..shader = null
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = const Color(0xffffdfa0).withValues(alpha: 1 - t);
+    c.drawOval(
+      Rect.fromCenter(
+        center: p.translate(0, -width * .3),
+        width: width * (1 + t * 2),
+        height: width * (.8 + t * 1.2),
+      ),
+      brush,
+    );
+    brush.style = PaintingStyle.fill;
+    if (game.transition > 0) {
+      for (var i = 0; i < 7; i++) {
+        final a = i * pi * 2 / 7 + game.motion * .1;
+        final at = p.translate(
+          cos(a) * width * (.5 + t * .7),
+          -width * .4 + sin(a) * width * (.5 + t * .7),
+        );
+        final r = width * .055 * (1 - t);
+        poly([
+          for (var n = 0; n < 8; n++)
+            Offset(
+              at.dx + cos(n * pi / 4) * (n.isEven ? r : r * .35),
+              at.dy + sin(n * pi / 4) * (n.isEven ? r : r * .35),
+            ),
+        ], const Color(0xffffefae));
+      }
+    }
+  }
+
+  void motionTrail(Offset p, double width) {
+    // Decorative wind and dust remain behind the vehicle and outside collectible hitboxes.
+    for (var i = 0; i < 8; i++) {
+      final t = (game.motion * .16 + i / 8) % 1;
+      final side = i.isEven ? -1.0 : 1.0;
+      final at = p.translate(
+        side * width * (.35 + t * .45) - game.lean * width * t,
+        width * (.12 + t * .9),
+      );
+      final color = switch (game.form) {
+        VehicleForm.plane => const Color(0xffedfaff),
+        VehicleForm.tank => const Color(0xffe8dfb7),
+        VehicleForm.dinosaur => const Color(0xffb9e9a3),
+        VehicleForm.peppa => const Color(0xfff9bdd9),
+        VehicleForm.car => const Color(0xffe5eada),
+      };
+      if (game.form == VehicleForm.plane) {
+        line(
+          at,
+          at.translate(0, width * .2),
+          color.withValues(alpha: (1 - t) * .55),
+          max(1, width * .045 * (1 - t)),
+        );
+      } else {
+        oval(
+          at,
+          width * (.025 + t * .05),
+          width * (.02 + t * .025),
+          color.withValues(alpha: (1 - t) * .4),
+        );
+      }
+    }
+    if (game.speed > .28) {
+      for (var i = 0; i < 8; i++) {
+        final t = (game.distance * .6 + i / 8) % 1;
+        final side = i.isEven ? -1.0 : 1.0;
+        final at = road.edge(side * 1.11, .48 + t * .5);
+        line(
+          at,
+          at.translate(side * s.width * .01, s.height * .025 * road.scale(t)),
+          const Color(0xfff7ffe8).withValues(alpha: t * .45),
+          1.3,
+        );
+      }
+    }
   }
 
   void drawItem(RoadItem item) {
@@ -622,7 +784,10 @@ class RoadPainter extends CustomPainter {
         Color(0xff42666e),
         Color(0xff243d50),
       ], 7);
-      line(Offset(x + 4, -43), Offset(x + 4, -9), const Color(0xff69818a), 3);
+      for (var i = 0; i < 3; i++) {
+        final y = -43 + ((i * 12 + game.motion * 12) % 35);
+        line(Offset(x + 3, y), Offset(x + 16, y), const Color(0xff738c91), 2);
+      }
     }
     gradientBox(const Rect.fromLTWH(-47, -59, 94, 65), const [
       Color(0xffeb8d46),
@@ -754,6 +919,20 @@ class RoadPainter extends CustomPainter {
       Color(0xff8ad7ec),
       Color(0xff387ca7),
     ], 5);
+    // Rotating translucent propeller and wingtip lights give the plane its own motion.
+    c.save();
+    c.translate(0, -108);
+    c.rotate(game.motion * 9);
+    for (var i = 0; i < 3; i++) {
+      final a = i * pi * 2 / 3;
+      line(
+        Offset(-cos(a) * 4, -sin(a) * 4),
+        Offset(cos(a) * 28, sin(a) * 28),
+        const Color(0x88d7eff5),
+        5,
+      );
+    }
+    c.restore();
     oval(const Offset(-77, -22), 3, 4, const Color(0xffffa7a0));
     oval(const Offset(77, -22), 3, 4, const Color(0xffa1e1b9));
   }
@@ -780,6 +959,10 @@ class RoadPainter extends CustomPainter {
       Offset(28, -96),
       Offset(-28, -96),
     ], const Color(0xffd0edae));
+    c.save();
+    c.translate(0, -48);
+    c.rotate(sin(game.motion * .4) * .055);
+    c.translate(0, 48);
     gradientBox(const Rect.fromLTWH(-27, -76, 54, 53), const [
       Color(0xffd2ecac),
       Color(0xff78ad7c),
@@ -790,6 +973,7 @@ class RoadPainter extends CustomPainter {
     ], 6);
     box(const Rect.fromLTWH(-9, -126, 18, 12), const Color(0xff5f9274), 4);
     oval(const Offset(5, -50), 12, 9, const Color(0xffbfe1a8));
+    c.restore();
     line(
       const Offset(-27, -13),
       const Offset(27, -13),
@@ -802,9 +986,10 @@ class RoadPainter extends CustomPainter {
 
   void dinosaur() {
     // A round, smiling ride-on dinosaur with a chunky tail and tiny arms.
+    final stride = sin(game.motion) * 5;
     final tail = Path()
       ..moveTo(-24, -44)
-      ..quadraticBezierTo(-73, -44, -77, -13)
+      ..quadraticBezierTo(-73, -44 + stride, -77, -13 + stride * 1.5)
       ..quadraticBezierTo(-44, -29, -15, -19)
       ..close();
     brush
@@ -838,11 +1023,11 @@ class RoadPainter extends CustomPainter {
       ..strokeWidth = 2.5;
     c.drawArc(const Rect.fromLTWH(37, -80, 23, 16), .3, 1.8, false, brush);
     brush.style = PaintingStyle.fill;
-    gradientBox(const Rect.fromLTWH(-32, -12, 27, 23), const [
+    gradientBox(Rect.fromLTWH(-32, -12 + stride, 27, 23), const [
       Color(0xff91d69f),
       Color(0xff4a9b7d),
     ], 9);
-    gradientBox(const Rect.fromLTWH(13, -10, 28, 23), const [
+    gradientBox(Rect.fromLTWH(13, -10 - stride, 28, 23), const [
       Color(0xff91d69f),
       Color(0xff4a9b7d),
     ], 9);
@@ -852,20 +1037,21 @@ class RoadPainter extends CustomPainter {
 
   void peppa() {
     // Original Canvas drawing of the requested pink pig character and red dress.
+    final stride = sin(game.motion) * 5;
     line(
       const Offset(-19, -3),
-      const Offset(-22, 13),
+      Offset(-22, 13 + stride),
       const Color(0xffefa5c2),
       7,
     );
     line(
       const Offset(14, -3),
-      const Offset(17, 13),
+      Offset(17, 13 - stride),
       const Color(0xffefa5c2),
       7,
     );
-    box(const Rect.fromLTWH(-34, 9, 24, 12), const Color(0xffffd16b), 5);
-    box(const Rect.fromLTWH(8, 9, 24, 12), const Color(0xffffd16b), 5);
+    box(Rect.fromLTWH(-34, 9 + stride, 24, 12), const Color(0xffffd16b), 5);
+    box(Rect.fromLTWH(8, 9 - stride, 24, 12), const Color(0xffffd16b), 5);
     final dress = Path()
       ..moveTo(-16, -60)
       ..quadraticBezierTo(-37, -36, -40, -2)
@@ -887,14 +1073,14 @@ class RoadPainter extends CustomPainter {
     );
     line(
       const Offset(28, -40),
-      const Offset(51, -53),
+      Offset(51, -53 + stride),
       const Color(0xfff5b0ca),
       6,
     );
     for (var i = 0; i < 3; i++) {
       line(
-        Offset(49, -52),
-        Offset(57 + i * 2.0, -58 + i * 5.0),
+        Offset(49, -52 + stride),
+        Offset(57 + i * 2.0, -58 + i * 5.0 + stride),
         const Color(0xfff5b0ca),
         3,
       );

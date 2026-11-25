@@ -10,6 +10,24 @@ import AVFoundation
   private var sounds: [String: [AVAudioPlayer]] = [:]
   private var music: AVAudioPlayer?
   private var tracks: [AVAudioPlayer] = []
+  private var loops: [String: AVAudioPlayer] = [:]
+  private var engineLoop: AVAudioPlayer?
+  private var ambientLoop: AVAudioPlayer?
+  private func stopDrive() { engineLoop?.pause(); ambientLoop?.pause() }
+  private func drive(_ args: [String: Any]?) {
+    guard args?["playing"] as? Bool == true else { stopDrive(); return }
+    let form = args?["form"] as? String ?? "car"
+    let scene = min(2, max(0, (args?["scene"] as? NSNumber)?.intValue ?? 0))
+    let speed = min(1, max(0, (args?["speed"] as? NSNumber)?.floatValue ?? 0))
+    if let player = loops["engine_" + form] {
+      if engineLoop !== player { engineLoop?.pause(); engineLoop = player; player.currentTime = 0 }
+      player.rate = 0.84 + speed * 0.22; player.volume = 0.11 + speed * 0.08; player.play()
+    }
+    if let player = loops["ambient_" + ["grass", "sea", "candy"][scene]] {
+      if ambientLoop !== player { ambientLoop?.pause(); ambientLoop = player; player.currentTime = 0 }
+      player.volume = 0.14; player.play()
+    }
+  }
   private let keys = ["music", "effects", "fast", "scene", "best", "musicTrack", "gentleRock"]
 
   override func application(_ application: UIApplication,
@@ -28,11 +46,17 @@ import AVFoundation
         guard let self = self else { result(nil); return }
         switch call.method {
         case "sound":
-          if let name = call.arguments as? String, let players = self.sounds[name],
+          let args = call.arguments as? [String: Any]
+          let name = args?["name"] as? String ?? call.arguments as? String ?? ""
+          if let players = self.sounds[name],
              let player = players.first(where: { !$0.isPlaying }) ?? players.first {
+            player.pan = min(1, max(-1, (args?["pan"] as? NSNumber)?.floatValue ?? 0))
+            player.rate = min(1.5, max(0.7, (args?["pitch"] as? NSNumber)?.floatValue ?? 1))
             player.currentTime = 0; player.play()
           }
           result(nil)
+        case "drive":
+          self.drive(call.arguments as? [String: Any]); result(nil)
         case "music":
           let args = call.arguments as? [String: Any]
           let track = min(2, max(0, (args?["track"] as? NSNumber)?.intValue ?? 0))
@@ -54,12 +78,17 @@ import AVFoundation
         default: result(FlutterMethodNotImplemented)
         }
       }
-    for name in ["coin", "bump", "start", "go", "finish", "pickup", "power", "guard", "horn", "transform", "smash"] {
+    for name in ["coin", "bump", "start", "go", "finish", "pickup", "power", "guard", "horn", "transform", "smash", "combo", "near", "warning", "revert", "dino_voice", "pig_voice"] {
       if let path = assetPath(name) {
         sounds[name] = (0..<3).compactMap { _ in
           let player = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
-          player?.volume = 0.65; player?.prepareToPlay(); return player
+          player?.enableRate = true; player?.volume = 0.55; player?.prepareToPlay(); return player
         }
+      }
+    }
+    for name in ["engine_car", "engine_plane", "engine_tank", "engine_dinosaur", "engine_peppa", "ambient_grass", "ambient_sea", "ambient_candy"] {
+      if let path = assetPath(name), let player = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path)) {
+        player.enableRate = true; player.numberOfLoops = -1; player.prepareToPlay(); loops[name] = player
       }
     }
     for name in ["twinkle", "frere", "music"] {
@@ -73,7 +102,7 @@ import AVFoundation
   }
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-    guard motion.isAccelerometerAvailable else { return FlutterError(code: "NO_SENSOR", message: "Touch controls available", details: nil) }
+    guard motion.isAccelerometerAvailable else { return FlutterError(code: "NO_SENSOR", message: "Motion sensor unavailable", details: nil) }
     sink = events; motion.accelerometerUpdateInterval = 1.0 / 50
     motion.startAccelerometerUpdates(to: .main) { [weak self] data, error in
       if let error = error { self?.sink?(FlutterError(code: "SENSOR", message: error.localizedDescription, details: nil)); return }
@@ -87,7 +116,7 @@ import AVFoundation
     motion.stopAccelerometerUpdates(); sink = nil; return nil
   }
   @objc private func stopInBackground() {
-    music?.pause(); motion.stopAccelerometerUpdates()
+    stopDrive(); music?.pause(); motion.stopAccelerometerUpdates()
     for players in sounds.values { for player in players { player.stop() } }
   }
 }

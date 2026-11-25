@@ -69,3 +69,33 @@ write('horn', [(0,.2,392,.6),(.22,.28,523,.55)], .6)
 
 write('transform', [(i*.09,.5,f,.55) for i,f in enumerate([392,523,659,784,1046])], 1)
 write('smash', [(0,.16,110,.55),(.02,.12,175,.4),(.06,.2,262,.3)], .35)
+
+
+# Layered, seamless vehicle and ambience loops. All samples are generated locally.
+def waveform(name, seconds, sample):
+    import random
+    rng = random.Random(29)
+    data = bytearray()
+    for i in range(int(rate * seconds)):
+        t = i / rate
+        value = sample(t, rng)
+        data.extend(struct.pack('<h', int(max(-.9, min(.9, value)) * 32767)))
+    with wave.open(str(out / (name + '.wav')), 'wb') as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(rate); f.writeframes(data)
+
+def sine(f,t): return math.sin(2*math.pi*f*t)
+def pulse(t,period,decay): return math.exp(-(t % period)*decay)
+waveform('engine_car',2,lambda t,r: .19*sine(60,t)*(1+.16*sine(8,t))+.06*sine(120,t)+.025*sine(180,t))
+waveform('engine_plane',2,lambda t,r: .12*sine(120,t)+.09*sine(36,t)*(1+.4*sine(12,t))+.03*sine(240,t))
+waveform('engine_tank',2,lambda t,r: .17*sine(45,t)+.12*pulse(t,.25,28)*sine(130,t)+.035*sine(90,t))
+waveform('engine_dinosaur',1.6,lambda t,r: .32*pulse(t,.4,22)*sine(75,t)+.04*sine(150,t)*pulse(t,.4,18))
+waveform('engine_peppa',1.6,lambda t,r: .22*pulse(t,.4,30)*sine(175,t)+.08*pulse(t,.8,16)*sine(262,t))
+waveform('ambient_grass',4,lambda t,r: .035*sine(92,t)*(1+.4*sine(.25,t))+.025*sine(1600+40*sine(2,t),t)*max(0,sine(.5,t))**12)
+waveform('ambient_sea',4,lambda t,r: (r.random()-.5)*.16*(.55+.45*sine(.25,t))+.018*sine(70,t))
+waveform('ambient_candy',4,lambda t,r: .06*sine(1046.5,t)*pulse(t,1,7)+.035*sine(1318.5,t)*pulse(t,.5,12))
+write('combo',[(i*.08,.35,f,.55) for i,f in enumerate([784,988,1175,1568])],.65)
+write('near',[(0,.12,660,.4),(.07,.2,880,.35)],.3)
+write('warning',[(0,.17,784,.35),(.2,.22,659,.3)],.5)
+write('revert',[(0,.22,784,.45),(.12,.3,523,.45)],.5)
+write('dino_voice',[(0,.2,196,.6),(.13,.3,247,.6),(.32,.3,294,.4)],.7)
+write('pig_voice',[(0,.16,392,.6),(.16,.18,523,.6),(.32,.22,440,.4)],.65)

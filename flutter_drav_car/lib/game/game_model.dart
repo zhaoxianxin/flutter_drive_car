@@ -49,6 +49,7 @@ class RoadItem {
   RoadItem(this.x, this.y, this.kind);
   double x;
   double y;
+  bool resolved = false;
   final ItemKind kind;
 }
 
@@ -60,6 +61,13 @@ class Spark {
   double life = 1;
 }
 
+class FloatingReward {
+  FloatingReward(this.x, this.y, this.value);
+  final double x, y;
+  final int value;
+  double life = 1;
+}
+
 class GameModel {
   GameModel({Random? random}) : random = random ?? Random();
   final Random random;
@@ -68,6 +76,18 @@ class GameModel {
   double x = 0, target = 0, time = 90, distance = 0, shield = 0;
   double slow = 0, countdown = 3, spawnIn = 1.3, celebration = 0;
   int coins = 0, bumps = 0;
+  int combo = 0, bestCombo = 0, dodges = 0;
+  double comboTime = 0, transition = 0, impact = 0, lean = 0;
+  double voiceIn = 1.4;
+  final rewards = <FloatingReward>[];
+  // Modest increase from 0.24/0.32, with a gentle eight-second launch ramp.
+  double get cruiseSpeed => fast ? .37 : .28;
+  double get speed =>
+      cruiseSpeed *
+      (.9 + .1 * (rideTime / 8).clamp(0, 1)) *
+      (slow > 0 ? .5 : 1);
+  double get motion => distance * 28;
+
   bool fast = false, rocking = true;
   double magnetTime = 0, rainbowTime = 0, rideTime = 0, formTime = 0;
   VehicleForm form = VehicleForm.car;
@@ -77,6 +97,8 @@ class GameModel {
     if (value == VehicleForm.car || transformed) return;
     form = value;
     formTime = 10;
+    transition = .65;
+    voiceIn = 1.2;
     slow = 0;
     // A second transformation cannot appear while the current one is active.
     items.removeWhere((item) => isTransform(item.kind));
@@ -99,6 +121,7 @@ class GameModel {
         ),
       );
     }
+    impact = .24;
     smashed++;
     events.add('smash');
   }
@@ -207,7 +230,16 @@ class GameModel {
   }
 
   void update(double delta) {
-    final dt = delta.clamp(0.0, .05);
+    // Short substeps prevent tunneling and keep timers consistent at 30/60/120 Hz.
+    var remaining = delta.clamp(0.0, .15);
+    while (remaining > .0000001) {
+      final dt = min(remaining, 1 / 60);
+      _step(dt);
+      remaining -= dt;
+    }
+  }
+
+  void _step(double dt) {
     if (state == PlayState.finished) {
       celebration += dt;
       _particles(dt);
@@ -224,11 +256,30 @@ class GameModel {
     if (state != PlayState.driving) return;
     time = max(0, time - dt);
     rideTime += dt;
+    transition = max(0, transition - dt);
+    impact = max(0, impact - dt);
+    comboTime = max(0, comboTime - dt);
+    if (comboTime <= 0) combo = 0;
+    lean +=
+        (((target - x) * 1.4).clamp(-.18, .18) - lean) * (1 - exp(-dt * 10));
+    if (transformed && formTime > 3 && formTime - dt <= 3) {
+      events.add('warning');
+    }
+    if (transformed &&
+        (form == VehicleForm.dinosaur || form == VehicleForm.peppa)) {
+      voiceIn -= dt;
+      if (voiceIn <= 0) {
+        events.add(form == VehicleForm.dinosaur ? 'dino_voice' : 'pig_voice');
+        voiceIn = 3.2;
+      }
+    }
     noticeTime = max(0, noticeTime - dt);
     if (formTime > 0) {
       formTime = max(0, formTime - dt);
       if (formTime <= 0) {
         form = VehicleForm.car;
+        transition = .45;
+        events.add('revert');
         shield = max(shield, 1.2);
         notice = '变回小汽车，继续兜风';
         noticeTime = 2;
@@ -240,12 +291,11 @@ class GameModel {
     rainbowTime = max(0, rainbowTime - dt);
     shield = max(0, shield - dt);
     slow = max(0, slow - dt);
-    final speed = (fast ? .32 : .24) * (slow > 0 ? .45 : 1);
     distance += speed * dt;
     spawnIn -= dt;
     if (spawnIn <= 0) {
       spawn();
-      spawnIn = 1.5;
+      spawnIn += 1.25;
     }
     for (final item in List<RoadItem>.of(items)) {
       if (!items.contains(item)) continue;
@@ -257,7 +307,17 @@ class GameModel {
       }
       if ((item.y - .76).abs() < .047 && (item.x - x).abs() < .22) {
         if (item.kind == ItemKind.coin) {
-          coins += rainbowTime > 0 ? 2 : 1;
+          final value = rainbowTime > 0 ? 2 : 1;
+          coins += value;
+          combo++;
+          bestCombo = max(combo, bestCombo);
+          comboTime = 2.4;
+          rewards.add(FloatingReward(item.x, .7, value));
+          if (combo % 6 == 0) {
+            events.add('combo');
+            notice = '连吃$combo枚！真棒';
+            noticeTime = 1.4;
+          }
           events.add('coin');
           burst(item.x, item.y, 0xffffc843);
           items.remove(item);
@@ -283,10 +343,23 @@ class GameModel {
         } else {
           bumps++;
           shield = 2.4;
-          slow = .8;
+          slow = .65;
+          impact = .4;
           events.add('bump');
           burst(x, .76, 0xffffffff);
           items.remove(item);
+        }
+      }
+    }
+    for (final item in items) {
+      if (item.kind == ItemKind.cone && item.y > .83 && !item.resolved) {
+        item.resolved = true;
+        final gap = (item.x - x).abs();
+        if (gap > .25 && gap < .55 && !transformed && shield <= 0) {
+          dodges++;
+          events.add('near');
+          notice = '躲得真棒！';
+          noticeTime = 1.2;
         }
       }
     }
@@ -307,6 +380,13 @@ class GameModel {
   }
 
   void _particles(double dt) {
+    for (final reward in rewards) {
+      reward.life -= dt * 1.6;
+    }
+    rewards.removeWhere((reward) => reward.life <= 0);
+    if (rewards.length > 12) rewards.removeRange(0, rewards.length - 12);
+    // Bursts are bounded even when a tank clears many obstacles at once.
+    if (sparks.length > 160) sparks.removeRange(0, sparks.length - 160);
     for (final p in sparks) {
       p.life -= dt * 1.5;
       p.x += p.vx * dt;

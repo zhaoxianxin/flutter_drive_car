@@ -153,7 +153,7 @@ void main() {
     final GameModel g = state.game as GameModel;
     g.state = PlayState.driving;
     g.inventory[PowerUp.magnet] = 1;
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 120));
     await tester.tap(find.text('小磁铁'));
     await tester.pump();
     expect(g.magnetTime, greaterThan(7));

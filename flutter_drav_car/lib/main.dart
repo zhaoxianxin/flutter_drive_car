@@ -56,6 +56,11 @@ class _DriverHomeState extends State<DriverHome>
   GameModel game = GameModel();
   final tilt = TiltController();
   late final Ticker ticker;
+  final frames = ValueNotifier<int>(0);
+  double hudElapsed = 0, audioElapsed = 0, lastHaptic = -1;
+  String lastDrive = '';
+  double lastCoinAt = -1;
+
   StreamSubscription<dynamic>? sensor;
   Duration? previous;
   bool inGame = false,
@@ -111,11 +116,29 @@ class _DriverHomeState extends State<DriverHome>
     previous = elapsed;
     if (!inGame) return;
     game.update(dt);
+    final changed = game.events.isNotEmpty;
     for (final event in game.events) {
-      if (effects) unawaited(GamePlatform.sound(event));
+      if (effects) {
+        if (event != 'coin' || game.rideTime - lastCoinAt >= .055) {
+          unawaited(
+            GamePlatform.sound(
+              event,
+              pan: game.x * .55,
+              pitch: event == 'coin' ? 1 + min(game.combo - 1, 7) * .045 : 1,
+            ),
+          );
+          if (event == 'coin') lastCoinAt = game.rideTime;
+        }
+      }
       if (event == 'go') syncMusic();
-      if (event == 'pickup' || event == 'power' || event == 'transform') {
-        unawaited(HapticFeedback.lightImpact());
+      if (['pickup', 'power', 'transform', 'bump', 'smash'].contains(event) &&
+          game.rideTime - lastHaptic > .25) {
+        lastHaptic = game.rideTime;
+        unawaited(
+          event == 'transform'
+              ? HapticFeedback.mediumImpact()
+              : HapticFeedback.lightImpact(),
+        );
       }
       if (event == 'finish') {
         unawaited(GamePlatform.music(false));
@@ -128,10 +151,37 @@ class _DriverHomeState extends State<DriverHome>
       }
     }
     game.events.clear();
-    setState(() {});
+    frames.value++;
+    hudElapsed += dt;
+    audioElapsed += dt;
+    if (changed || audioElapsed >= .15) {
+      syncDrive();
+      audioElapsed = 0;
+    }
+    if (changed || hudElapsed >= .1) {
+      setState(() {});
+      hudElapsed = 0;
+    }
+  }
+
+  void syncDrive({bool force = false}) {
+    final playing = effects && inGame && game.moving;
+    final speed = (game.speed / .37).clamp(0.0, 1.0);
+    final key = '$playing/${game.form.name}/$scene/${(speed * 20).round()}';
+    if (!force && key == lastDrive) return;
+    lastDrive = key;
+    unawaited(
+      GamePlatform.drive(
+        playing,
+        form: game.form.name,
+        scene: scene,
+        speed: speed,
+      ),
+    );
   }
 
   void syncMusic() {
+    syncDrive(force: true);
     unawaited(
       GamePlatform.music(
         music && inGame && game.state == PlayState.driving,
@@ -178,6 +228,9 @@ class _DriverHomeState extends State<DriverHome>
         ..fast = fast
         ..rocking = gentleRock;
       savedResult = false;
+      lastCoinAt = -1;
+      lastHaptic = -1;
+      hudElapsed = 0;
     });
     startSensor();
   }
@@ -222,6 +275,7 @@ class _DriverHomeState extends State<DriverHome>
     setState(() {
       inGame = false;
     });
+    syncDrive(force: true);
   }
 
   @override
@@ -238,6 +292,8 @@ class _DriverHomeState extends State<DriverHome>
   @override
   void dispose() {
     ticker.dispose();
+    frames.dispose();
+    unawaited(GamePlatform.drive(false));
     stopSensor();
     WidgetsBinding.instance.removeObserver(this);
     unawaited(GamePlatform.music(false));
@@ -511,7 +567,11 @@ class _DriverHomeState extends State<DriverHome>
         Positioned.fill(
           child: RepaintBoundary(
             child: CustomPaint(
-              painter: RoadPainter(game: game, world: WorldTheme.all[scene]),
+              painter: RoadPainter(
+                game: game,
+                world: WorldTheme.all[scene],
+                animation: frames,
+              ),
             ),
           ),
         ),
@@ -572,6 +632,9 @@ class _DriverHomeState extends State<DriverHome>
                 const SizedBox(height: 10),
                 powerBar(),
                 const Spacer(),
+                if (game.combo >= 3 && game.comboTime > 0)
+                  chip('连吃 ${game.combo} 枚', Icons.auto_awesome_rounded),
+                const SizedBox(height: 4),
                 if (game.transformed)
                   chip(
                     '${game.form.title}变身 ${game.formTime.ceil()}秒 · 撞开路障',
@@ -716,10 +779,15 @@ class _DriverHomeState extends State<DriverHome>
               SizedBox(
                 width: 94,
                 height: 84,
-                child: CustomPaint(
-                  painter: WheelPainter(
-                    game.x * .9,
-                    color: const Color(0xff355c67),
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: frames,
+                    builder: (context, child) => CustomPaint(
+                      painter: WheelPainter(
+                        game.x * .9,
+                        color: const Color(0xff355c67),
+                      ),
+                    ),
                   ),
                 ),
               ),
